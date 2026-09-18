@@ -62,12 +62,22 @@ def chrome_time_to_iso(chrome_timestamp):
         return None
 
 
+def _as_dict(value):
+    """Returns value if it's a dict, otherwise an empty dict."""
+    return value if isinstance(value, dict) else {}
+
+
 def parse_permissions(profile_path):
     """
     Parses site permission grants from Chrome's 'Secure Preferences' and/or
     'Preferences' JSON files. Returns a list of dicts, one per grant.
+
+    The same exception can appear in both files; when it does, the
+    'Secure Preferences' copy takes priority, since it's Chrome's
+    integrity-protected store.
     """
     results = []
+    seen = set()
     candidate_filenames = ["Secure Preferences", "Preferences"]
 
     for filename in candidate_filenames:
@@ -82,11 +92,14 @@ def parse_permissions(profile_path):
             print(f"  [!] Could not parse {filename}: {e}")
             continue
 
-        exceptions = (
-            data.get("profile", {})
-            .get("content_settings", {})
-            .get("exceptions", {})
-        )
+        # Walked defensively: a well-formed Preferences file always nests
+        # exceptions this way, but a corrupted or hand-edited one might
+        # have a non-dict value at any level (e.g. the whole file is a
+        # JSON array), which would otherwise crash the plain .get() chain.
+        profile = _as_dict(data).get("profile")
+        content_settings = _as_dict(profile).get("content_settings")
+        exceptions = _as_dict(content_settings).get("exceptions")
+        exceptions = _as_dict(exceptions)
 
         for permission_type, sites in exceptions.items():
             if not isinstance(sites, dict):
@@ -94,6 +107,10 @@ def parse_permissions(profile_path):
             for site_pattern, details in sites.items():
                 if not isinstance(details, dict):
                     continue
+                dedup_key = (permission_type, site_pattern)
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
                 results.append({
                     "source_file": filename,
                     "permission_type": permission_type,
@@ -269,30 +286,37 @@ def clean_site_name(site_pattern):
     return name or site_pattern
 
 
-def format_permissions_section(permissions):
-    """
-    Builds a plain-English, per-site rendering of permission grants:
-    real allow/block decisions first, with internal Chrome bookkeeping
-    (engagement scores, hints, etc.) grouped separately underneath.
-    """
-    lines = []
+# Alias kept for compatibility with tooling/tests written against the
+# other draft's naming; identical behavior to clean_site_name().
+friendly_site_name = clean_site_name
 
-    if not permissions:
-        lines.append("No permission grants found.")
-        return lines
 
+def friendly_permission_type(permission_type):
+    """
+    Looks up a human-readable label for a raw Chrome permission_type key,
+    falling back to a title-cased version of the key when unmapped.
+    """
+    return PERMISSION_LABELS.get(
+        permission_type, permission_type.replace("_", " ").capitalize()
+    )
+
+
+def summarize_permissions_by_site(permissions):
+    """
+    Groups raw permission entries by site into real allow/block
+    "decisions" and internal Chrome "metadata" (engagement scores,
+    hints, etc.). Returns {site: {"decisions": [...], "metadata": [...]}}.
+    """
     sites = {}
     for entry in permissions:
         site = clean_site_name(entry["site"])
-        sites.setdefault(site, {"decisions": [], "bookkeeping": []})
+        sites.setdefault(site, {"decisions": [], "metadata": []})
 
         permission_type = entry["permission_type"]
         setting = entry["setting"]
 
         if isinstance(setting, int):
-            label = PERMISSION_LABELS.get(
-                permission_type, permission_type.replace("_", " ").capitalize()
-            )
+            label = friendly_permission_type(permission_type)
             setting_text = SETTING_LABELS.get(setting, f"Unknown setting ({setting})")
             detail = f"{label}: {setting_text}"
             if entry.get("last_used"):
@@ -308,7 +332,24 @@ def format_permissions_section(permissions):
                     gloss += f" (current score: {setting['rawScore']:.1f})"
                 elif permission_type == "media_engagement" and setting.get("visits"):
                     gloss += f" ({setting['visits']} visit(s) recorded)"
-            sites[site]["bookkeeping"].append(f"{label} — {gloss}")
+            sites[site]["metadata"].append(f"{label} — {gloss}")
+
+    return sites
+
+
+def format_permissions_section(permissions):
+    """
+    Builds a plain-English, per-site rendering of permission grants:
+    real allow/block decisions first, with internal Chrome bookkeeping
+    (engagement scores, hints, etc.) grouped separately underneath.
+    """
+    lines = []
+
+    if not permissions:
+        lines.append("No permission grants found.")
+        return lines
+
+    sites = summarize_permissions_by_site(permissions)
 
     for site in sorted(sites):
         lines.append(f"\n{site}")
@@ -320,9 +361,9 @@ def format_permissions_section(permissions):
         else:
             lines.append("    (no explicit allow/block permissions found)")
 
-        if group["bookkeeping"]:
+        if group["metadata"]:
             lines.append("    Other browser bookkeeping (not a permission you granted):")
-            for note in group["bookkeeping"]:
+            for note in group["metadata"]:
                 lines.append(f"      - {note}")
 
     return lines
