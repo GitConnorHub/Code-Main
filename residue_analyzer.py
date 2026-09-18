@@ -448,10 +448,20 @@ def main():
     )
     parser.add_argument(
         "--output",
-        help="Path to save the output report (default: residue_report.txt)",
-        default="residue_report.txt",
+        help=(
+            "Path to save the output report. If omitted, saves "
+            "'residue_report.txt' in the same folder as this script, "
+            "regardless of the current working directory."
+        ),
+        default=None,
     )
     args = parser.parse_args()
+
+    output_path = (
+        Path(args.output)
+        if args.output
+        else Path(__file__).resolve().parent / "residue_report.txt"
+    )
 
     profile_path = (
         Path(args.profile_path) if args.profile_path else find_chrome_profile_path()
@@ -473,7 +483,7 @@ def main():
         print("[*] Inventorying Service Worker cache...")
         cache_inventory = inventory_service_worker_cache(profile_path)
 
-        generate_report(permissions, autofill_entries, cache_inventory, args.output)
+        generate_report(permissions, autofill_entries, cache_inventory, output_path)
 
 
 if __name__ == "__main__":
