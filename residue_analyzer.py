@@ -303,6 +303,11 @@ def format_permissions_section(permissions):
             gloss = BOOKKEEPING_GLOSSARY.get(
                 permission_type, "Internal browser data Chrome keeps for this site."
             )
+            if isinstance(setting, dict):
+                if permission_type == "site_engagement" and setting.get("rawScore") is not None:
+                    gloss += f" (current score: {setting['rawScore']:.1f})"
+                elif permission_type == "media_engagement" and setting.get("visits"):
+                    gloss += f" ({setting['visits']} visit(s) recorded)"
             sites[site]["bookkeeping"].append(f"{label} — {gloss}")
 
     for site in sorted(sites):
@@ -330,33 +335,53 @@ def generate_report(permissions, autofill_entries, cache_inventory, output_path)
     """
     lines = []
     lines.append("=" * 70)
-    lines.append("BROWSER ANTI-FORENSIC RESIDUE REPORT")
-    lines.append(f"Generated: {datetime.now().isoformat()}")
+    lines.append("BROWSER RESIDUE REPORT")
+    lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("=" * 70)
+    lines.append(
+        "\nThis report summarizes traces left behind in a Chrome browser "
+        "profile: what permissions sites were given, what form data Chrome "
+        "remembered, and what cached files remain from web apps."
+    )
 
     lines.append("\n--- SITE PERMISSIONS (what sites are allowed to do) ---")
+    lines.append(
+        "What each site was allowed or blocked from doing (camera, "
+        "microphone, location, etc.), grouped by website."
+    )
     lines.extend(format_permissions_section(permissions))
 
-    lines.append("\n--- AUTOFILL ENTRIES ---")
+    lines.append("\n--- SAVED FORM DATA (AUTOFILL) ---")
+    lines.append(
+        "Text that Chrome remembered from forms you've filled in before "
+        "(names, addresses, search terms typed into forms, etc.)."
+    )
     if autofill_entries:
         for entry in autofill_entries:
+            times_word = "time" if entry["use_count"] == 1 else "times"
+            last_used = entry["date_last_used"] or "not recorded"
             lines.append(
-                f"Field: {entry['field_name']} | Value: {entry['value']} | "
-                f"Used: {entry['use_count']}x | Last used: {entry['date_last_used']}"
+                f"\nField \"{entry['field_name']}\" = \"{entry['value']}\"\n"
+                f"    - Used {entry['use_count']} {times_word}; last used {last_used}"
             )
     else:
-        lines.append("No autofill entries found.")
+        lines.append("\nNo saved form data found.")
 
-    lines.append("\n--- SERVICE WORKER CACHE INVENTORY ---")
+    lines.append("\n--- CACHED WEB APP DATA ---")
+    lines.append(
+        "Files that websites' background 'service workers' have stored "
+        "locally (e.g. for offline use or faster loading). Contents "
+        "aren't inspected here, just counted."
+    )
     if cache_inventory:
         for entry in cache_inventory:
+            size_kb = entry["approx_size_bytes"] / 1024
             lines.append(
-                f"Cache folder: {entry['cache_folder_hash']} | "
-                f"Files: {entry['file_count']} | "
-                f"Approx size: {entry['approx_size_bytes']} bytes"
+                f"Cache ID {entry['cache_folder_hash'][:12]}... "
+                f"({entry['file_count']} file(s), about {size_kb:.1f} KB)"
             )
     else:
-        lines.append("No Service Worker cache data found.")
+        lines.append("No cached web app data found.")
 
     report_text = "\n".join(lines)
 

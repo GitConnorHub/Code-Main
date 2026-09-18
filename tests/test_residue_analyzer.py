@@ -344,6 +344,7 @@ class TestFormatPermissionsSection:
         assert "no explicit allow/block permissions found" in text
         assert "Site engagement" in text
         assert "how often do you use this site" in text
+        assert "current score: 3.6" in text
 
     def test_sites_without_decisions_show_placeholder(self):
         permissions = [
@@ -411,11 +412,12 @@ class TestGenerateReport:
         ra.generate_report(permissions, autofill_entries, cache_inventory, str(output_path))
 
         text = output_path.read_text(encoding="utf-8")
-        assert "BROWSER ANTI-FORENSIC RESIDUE REPORT" in text
+        assert "BROWSER RESIDUE REPORT" in text
         assert "discord.com" in text
         assert "Location access: Allowed" in text
-        assert "Field: email" in text
-        assert "Cache folder: abc123" in text
+        assert 'Field "email" = "user@example.com"' in text
+        assert "Used 2 times; last used not recorded" in text
+        assert "Cache ID abc123... (5 file(s), about 0.4 KB)" in text
 
     def test_writes_placeholder_messages_when_all_empty(self, tmp_path):
         output_path = tmp_path / "report.txt"
@@ -424,8 +426,8 @@ class TestGenerateReport:
 
         text = output_path.read_text(encoding="utf-8")
         assert "No permission grants found." in text
-        assert "No autofill entries found." in text
-        assert "No Service Worker cache data found." in text
+        assert "No saved form data found." in text
+        assert "No cached web app data found." in text
 
 
 # ---------------------------------------------------------------------------
@@ -494,9 +496,8 @@ class TestMainEndToEnd:
         assert "discord.com" in text
         assert "Camera access: Allowed" in text
         assert "Other browser bookkeeping" in text
-        assert "Field: username | Value: jdoe" in text
-        assert "Cache folder: hash1" in text
-        assert "Files: 1" in text
+        assert 'Field "username" = "jdoe"' in text
+        assert "Cache ID hash1... (1 file(s)" in text
 
     def test_nonexistent_profile_path_does_not_crash(self, tmp_path, monkeypatch, capsys):
         missing_path = tmp_path / "does-not-exist"
