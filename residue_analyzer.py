@@ -74,10 +74,13 @@ def parse_permissions(profile_path):
 
     The same exception can appear in both files; when it does, the
     'Secure Preferences' copy takes priority, since it's Chrome's
-    integrity-protected store.
+    integrity-protected store. If the two files disagree on the actual
+    setting for the same grant, the kept entry's "conflict_note" field
+    is set to a warning string (otherwise it's None) so this can be
+    surfaced to the investigator rather than silently resolved.
     """
     results = []
-    seen = set()
+    kept_by_key = {}
     candidate_filenames = ["Secure Preferences", "Preferences"]
 
     for filename in candidate_filenames:
@@ -108,17 +111,31 @@ def parse_permissions(profile_path):
                 if not isinstance(details, dict):
                     continue
                 dedup_key = (permission_type, site_pattern)
-                if dedup_key in seen:
+                setting = details.get("setting")
+
+                if dedup_key in kept_by_key:
+                    kept_entry = kept_by_key[dedup_key]
+                    if setting != kept_entry["setting"]:
+                        kept_entry["conflict_note"] = (
+                            f"{filename} has a different value for this grant "
+                            f"(setting={setting!r} vs {kept_entry['setting']!r} "
+                            f"in {kept_entry['source_file']}); "
+                            f"{kept_entry['source_file']} was used since it's "
+                            f"Chrome's integrity-protected store."
+                        )
                     continue
-                seen.add(dedup_key)
-                results.append({
+
+                new_entry = {
                     "source_file": filename,
                     "permission_type": permission_type,
                     "site": site_pattern,
-                    "setting": details.get("setting"),
+                    "setting": setting,
                     "last_used": chrome_time_to_iso(details.get("last_used")),
                     "last_modified": chrome_time_to_iso(details.get("last_modified")),
-                })
+                    "conflict_note": None,
+                }
+                kept_by_key[dedup_key] = new_entry
+                results.append(new_entry)
 
     return results
 
@@ -314,6 +331,7 @@ def summarize_permissions_by_site(permissions):
 
         permission_type = entry["permission_type"]
         setting = entry["setting"]
+        conflict_note = entry.get("conflict_note")
 
         if isinstance(setting, int):
             label = friendly_permission_type(permission_type)
@@ -321,6 +339,8 @@ def summarize_permissions_by_site(permissions):
             detail = f"{label}: {setting_text}"
             if entry.get("last_used"):
                 detail += f" (last used {entry['last_used']})"
+            if conflict_note:
+                detail += f" [WARNING: {conflict_note}]"
             sites[site]["decisions"].append(detail)
         else:
             label = permission_type.replace("_", " ").capitalize()
@@ -352,6 +372,8 @@ def summarize_permissions_by_site(permissions):
                             identities.append(f"{idp}, {status}")
                         if identities:
                             gloss += " (" + "; ".join(identities) + ")"
+            if conflict_note:
+                gloss += f" [WARNING: {conflict_note}]"
             sites[site]["metadata"].append(f"{label} — {gloss}")
 
     return sites

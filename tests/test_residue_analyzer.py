@@ -572,6 +572,60 @@ class TestParsePermissionsAdditional:
         assert len(results) == 2
         assert sources == {"Secure Preferences", "Preferences"}
 
+    def test_flags_conflict_when_files_disagree_on_setting(self, tmp_path):
+        # test_parse_permissions_deduplicates_across_both_files above
+        # covers picking Secure Preferences' value when the two files
+        # disagree; this checks the investigator is actually told a
+        # conflict happened, rather than it being resolved silently.
+        secure_prefs = {
+            "profile": {"content_settings": {"exceptions": {
+                "geolocation": {"https://example.com:443,*": {"setting": 1}}
+            }}}
+        }
+        regular_prefs = {
+            "profile": {"content_settings": {"exceptions": {
+                "geolocation": {"https://example.com:443,*": {"setting": 2}}
+            }}}
+        }
+        (tmp_path / "Secure Preferences").write_text(json.dumps(secure_prefs), encoding="utf-8")
+        (tmp_path / "Preferences").write_text(json.dumps(regular_prefs), encoding="utf-8")
+
+        results = ra.parse_permissions(tmp_path)
+
+        assert len(results) == 1
+        note = results[0]["conflict_note"]
+        assert note is not None
+        assert "Preferences" in note
+        assert "Secure Preferences" in note
+
+    def test_no_conflict_note_when_files_agree(self, tmp_path):
+        # Two files legitimately having the exact same grant (a common,
+        # benign case) must not be flagged as a conflict.
+        prefs = {
+            "profile": {"content_settings": {"exceptions": {
+                "geolocation": {"https://example.com:443,*": {"setting": 1}}
+            }}}
+        }
+        (tmp_path / "Secure Preferences").write_text(json.dumps(prefs), encoding="utf-8")
+        (tmp_path / "Preferences").write_text(json.dumps(prefs), encoding="utf-8")
+
+        results = ra.parse_permissions(tmp_path)
+
+        assert len(results) == 1
+        assert results[0]["conflict_note"] is None
+
+    def test_no_conflict_note_for_a_single_file_grant(self, tmp_path):
+        prefs = {
+            "profile": {"content_settings": {"exceptions": {
+                "geolocation": {"https://example.com:443,*": {"setting": 1}}
+            }}}
+        }
+        (tmp_path / "Preferences").write_text(json.dumps(prefs), encoding="utf-8")
+
+        results = ra.parse_permissions(tmp_path)
+
+        assert results[0]["conflict_note"] is None
+
 
 class TestParseAutofillAdditional:
     def test_copies_wal_and_shm_companion_files(self, tmp_path, monkeypatch):
@@ -742,6 +796,45 @@ class TestFormatPermissionsSection:
         text = "\n".join(ra.format_permissions_section(permissions))
 
         assert "https://accounts.google.com, not currently signed in" in text
+
+    def test_conflict_note_is_surfaced_as_a_warning(self):
+        permissions = [
+            {
+                "permission_type": "geolocation",
+                "site": "https://example.com,*",
+                "setting": 1,
+                "last_used": None,
+                "conflict_note": (
+                    "Preferences has a different value for this grant "
+                    "(setting=2 vs 1 in Secure Preferences); Secure "
+                    "Preferences was used since it's Chrome's "
+                    "integrity-protected store."
+                ),
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "Location access: Allowed" in text
+        assert "[WARNING:" in text
+        assert "Preferences has a different value" in text
+
+    def test_no_warning_when_conflict_note_absent(self):
+        # entries built by hand (not via parse_permissions) may not
+        # include a "conflict_note" key at all; this must not crash and
+        # must not print a spurious warning.
+        permissions = [
+            {
+                "permission_type": "geolocation",
+                "site": "https://example.com,*",
+                "setting": 1,
+                "last_used": None,
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "[WARNING:" not in text
 
     def test_sites_without_decisions_show_placeholder(self):
         permissions = [
