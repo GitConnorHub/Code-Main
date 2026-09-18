@@ -450,18 +450,13 @@ def main():
         "--output",
         help=(
             "Path to save the output report. If omitted, saves "
-            "'residue_report.txt' in the same folder as this script, "
-            "regardless of the current working directory."
+            "'residue_report.txt' in the folder the script is run from."
         ),
         default=None,
     )
     args = parser.parse_args()
 
-    output_path = (
-        Path(args.output)
-        if args.output
-        else Path(__file__).resolve().parent / "residue_report.txt"
-    )
+    output_path = Path(args.output) if args.output else Path.cwd() / "residue_report.txt"
 
     profile_path = (
         Path(args.profile_path) if args.profile_path else find_chrome_profile_path()
