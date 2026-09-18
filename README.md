@@ -55,17 +55,25 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Test files live in `tests/test_residue_analyzer.py`, organized into one
-class per function:
+Test files live in `tests/test_residue_analyzer.py`. Most tests are plain
+`test_*` functions grouped by the function they cover (`chrome_time_to_iso`,
+`find_chrome_profile_path`, `parse_permissions`, `parse_autofill`,
+`inventory_service_worker_cache`, and the readability layer
+`friendly_permission_type`/`friendly_site_name`/`summarize_permissions_by_site`),
+including regression tests for two `AttributeError` crashes previously found
+in `parse_permissions` on malformed/non-dict JSON, and a deduplication test
+for the same exception appearing in both `Secure Preferences` and
+`Preferences`. An end-to-end test runs the full pipeline against a
+synthetic profile.
+
+A few remaining classes cover behavior not exercised above:
 
 | Class | Covers |
 |---|---|
-| `TestFindChromeProfilePath` | Profile path resolution, `LOCALAPPDATA` lookup |
-| `TestChromeTimeToIso` | Chrome/WebKit timestamp conversion |
-| `TestParsePermissions` | Preferences JSON parsing, including a regression test for the `AttributeError` crash on malformed exception data |
-| `TestParseAutofill` | `Web Data` SQLite parsing, WAL/SHM copying, copy failures |
-| `TestInventoryServiceWorkerCache` | Cache Storage directory inventory |
-| `TestCleanSiteName` | Site name display cleanup |
-| `TestFormatPermissionsSection` | Plain-English permission report formatting |
-| `TestGenerateReport` | Full report generation |
-| `TestMainEndToEnd` | Full CLI pipeline against a fake profile directory |
+| `TestFindChromeProfilePathLiveDetection` | `LOCALAPPDATA`-based live profile lookup |
+| `TestParsePermissionsAdditional` | A non-dict per-site "details" value; merging distinct entries across both preference files |
+| `TestParseAutofillAdditional` | WAL/SHM companion file copying; a locked/inaccessible `Web Data` file |
+| `TestCleanSiteNameAdditional` | Site name display cleanup edge cases |
+| `TestFormatPermissionsSection` | Plain-English permission report text rendering |
+| `TestGenerateReport` | Full report generation, including the all-empty case |
+| `TestMainEndToEnd` | Full CLI pipeline, including a nonexistent profile path |
