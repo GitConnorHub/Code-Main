@@ -328,10 +328,30 @@ def summarize_permissions_by_site(permissions):
                 permission_type, "Internal browser data Chrome keeps for this site."
             )
             if isinstance(setting, dict):
-                if permission_type == "site_engagement" and setting.get("rawScore") is not None:
-                    gloss += f" (current score: {setting['rawScore']:.1f})"
-                elif permission_type == "media_engagement" and setting.get("visits"):
-                    gloss += f" ({setting['visits']} visit(s) recorded)"
+                if permission_type == "site_engagement":
+                    if setting.get("rawScore") is not None:
+                        gloss += f" (current score: {setting['rawScore']:.1f})"
+                    last_active = chrome_time_to_iso(setting.get("lastEngagementTime"))
+                    if last_active:
+                        gloss += f"; last active {last_active}"
+                elif permission_type == "media_engagement":
+                    if setting.get("visits"):
+                        gloss += f" ({setting['visits']} visit(s) recorded)"
+                    last_played = chrome_time_to_iso(setting.get("lastMediaPlaybackTime"))
+                    if last_played:
+                        gloss += f"; media last played {last_played}"
+                elif permission_type == "fedcm_idp_signin":
+                    chosen_objects = setting.get("chosen-objects")
+                    if isinstance(chosen_objects, list):
+                        identities = []
+                        for obj in chosen_objects:
+                            if not isinstance(obj, dict):
+                                continue
+                            idp = obj.get("idp-origin", "unknown identity provider")
+                            status = "currently signed in" if obj.get("idp-signin-status") else "not currently signed in"
+                            identities.append(f"{idp}, {status}")
+                        if identities:
+                            gloss += " (" + "; ".join(identities) + ")"
             sites[site]["metadata"].append(f"{label} — {gloss}")
 
     return sites

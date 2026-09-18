@@ -674,6 +674,75 @@ class TestFormatPermissionsSection:
         assert "how often do you use this site" in text
         assert "current score: 3.6" in text
 
+    def test_site_engagement_surfaces_last_active_timestamp(self):
+        # lastEngagementTime is a real "last active on this site" signal
+        # buried in Chrome's engagement bookkeeping; it should be
+        # surfaced as a readable timestamp, not silently dropped.
+        permissions = [
+            {
+                "permission_type": "site_engagement",
+                "site": "https://example.com,*",
+                "setting": {"rawScore": 3.6, "lastEngagementTime": 13432214034262918},
+                "last_used": None,
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "last active 2026-08-26" in text
+
+    def test_media_engagement_surfaces_last_played_timestamp_when_nonzero(self):
+        permissions = [
+            {
+                "permission_type": "media_engagement",
+                "site": "https://example.com,*",
+                "setting": {"visits": 1, "lastMediaPlaybackTime": 13432214034262918},
+                "last_used": None,
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "media last played 2026-08-26" in text
+
+    def test_media_engagement_omits_last_played_when_zero(self):
+        # A lastMediaPlaybackTime of 0 means no media was ever played
+        # (Chrome's convention for "unset"), so the clause should be
+        # left out entirely rather than showing a bogus 1601 timestamp.
+        permissions = [
+            {
+                "permission_type": "media_engagement",
+                "site": "https://example.com,*",
+                "setting": {"visits": 1, "lastMediaPlaybackTime": 0.0},
+                "last_used": None,
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "media last played" not in text
+
+    def test_fedcm_idp_signin_surfaces_identity_and_status(self):
+        permissions = [
+            {
+                "permission_type": "fedcm_idp_signin",
+                "site": "https://accounts.google.com:443,*",
+                "setting": {
+                    "chosen-objects": [
+                        {
+                            "idp-origin": "https://accounts.google.com",
+                            "idp-signin-status": False,
+                        }
+                    ]
+                },
+                "last_used": None,
+            }
+        ]
+
+        text = "\n".join(ra.format_permissions_section(permissions))
+
+        assert "https://accounts.google.com, not currently signed in" in text
+
     def test_sites_without_decisions_show_placeholder(self):
         permissions = [
             {
