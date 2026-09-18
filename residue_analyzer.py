@@ -192,6 +192,137 @@ def inventory_service_worker_cache(profile_path):
     return results
 
 
+# Human-readable labels for the permission types that represent a real
+# allow/block decision a person made (or a site prompted for), as opposed
+# to Chrome's internal per-site bookkeeping (engagement scores, hints, etc).
+PERMISSION_LABELS = {
+    "geolocation": "Location access",
+    "media_stream_camera": "Camera access",
+    "media_stream_mic": "Microphone access",
+    "notifications": "Notifications",
+    "midi_sysex": "MIDI device access (full control)",
+    "midi": "MIDI device access",
+    "durable_storage": "Persistent storage",
+    "push_messaging": "Push messaging",
+    "popups": "Pop-ups",
+    "javascript": "JavaScript",
+    "images": "Images",
+    "cookies": "Cookies",
+    "automatic_downloads": "Automatic downloads",
+    "clipboard": "Clipboard access",
+    "sensors": "Motion/orientation sensors",
+    "usb_guard": "USB device access",
+    "serial_guard": "Serial device access",
+    "hid_guard": "HID device access",
+    "bluetooth_guard": "Bluetooth device access",
+    "window_placement": "Multi-screen window placement",
+    "background_sync": "Background sync",
+    "payment_handler": "Payment handler",
+    "ar": "Augmented reality",
+    "vr": "Virtual reality",
+    "storage_access": "Cross-site storage access",
+}
+
+# Chrome's ContentSetting enum values.
+SETTING_LABELS = {
+    0: "Default (not explicitly set)",
+    1: "Allowed",
+    2: "Blocked",
+    3: "Ask every time",
+    4: "Allowed for this browsing session only",
+    5: "Allowed for important content only",
+}
+
+# One-line plain-English explanation for permission types that are internal
+# Chrome bookkeeping rather than a real allow/block decision.
+BOOKKEEPING_GLOSSARY = {
+    "client_hints": "Technical details Chrome shares with this site about your device/browser.",
+    "cookie_controls_metadata": "Internal tracking-protection bookkeeping for this site.",
+    "fedcm_idp_signin": "Records that you're signed in via this site's federated login service.",
+    "media_engagement": "Chrome's internal score for how much audio/video you've played on this site.",
+    "permission_autoblocking_data": "Tracks repeated permission denials so Chrome can auto-block future prompts.",
+    "site_engagement": "Chrome's internal 'how often do you use this site' score.",
+}
+
+
+def clean_site_name(site_pattern):
+    """
+    Turns a raw Chrome content-setting site pattern (e.g.
+    "https://[*.]example.com:443,*") into a plain hostname
+    (e.g. "example.com") for display to non-technical readers.
+    """
+    name = site_pattern.split(",")[0]
+
+    for prefix in ("https://", "http://"):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+            break
+
+    name = name.replace("[*.]", "")
+
+    if ":" in name:
+        host, _, rest = name.partition(":")
+        port, _, tail = rest.partition("/")
+        if port.isdigit():
+            name = host + (("/" + tail) if tail else "")
+
+    return name or site_pattern
+
+
+def format_permissions_section(permissions):
+    """
+    Builds a plain-English, per-site rendering of permission grants:
+    real allow/block decisions first, with internal Chrome bookkeeping
+    (engagement scores, hints, etc.) grouped separately underneath.
+    """
+    lines = []
+
+    if not permissions:
+        lines.append("No permission grants found.")
+        return lines
+
+    sites = {}
+    for entry in permissions:
+        site = clean_site_name(entry["site"])
+        sites.setdefault(site, {"decisions": [], "bookkeeping": []})
+
+        permission_type = entry["permission_type"]
+        setting = entry["setting"]
+
+        if isinstance(setting, int):
+            label = PERMISSION_LABELS.get(
+                permission_type, permission_type.replace("_", " ").capitalize()
+            )
+            setting_text = SETTING_LABELS.get(setting, f"Unknown setting ({setting})")
+            detail = f"{label}: {setting_text}"
+            if entry.get("last_used"):
+                detail += f" (last used {entry['last_used']})"
+            sites[site]["decisions"].append(detail)
+        else:
+            label = permission_type.replace("_", " ").capitalize()
+            gloss = BOOKKEEPING_GLOSSARY.get(
+                permission_type, "Internal browser data Chrome keeps for this site."
+            )
+            sites[site]["bookkeeping"].append(f"{label} — {gloss}")
+
+    for site in sorted(sites):
+        lines.append(f"\n{site}")
+        group = sites[site]
+
+        if group["decisions"]:
+            for decision in group["decisions"]:
+                lines.append(f"    - {decision}")
+        else:
+            lines.append("    (no explicit allow/block permissions found)")
+
+        if group["bookkeeping"]:
+            lines.append("    Other browser bookkeeping (not a permission you granted):")
+            for note in group["bookkeeping"]:
+                lines.append(f"      - {note}")
+
+    return lines
+
+
 def generate_report(permissions, autofill_entries, cache_inventory, output_path):
     """
     Writes a consolidated, human-readable residue report to a text file
@@ -203,16 +334,8 @@ def generate_report(permissions, autofill_entries, cache_inventory, output_path)
     lines.append(f"Generated: {datetime.now().isoformat()}")
     lines.append("=" * 70)
 
-    lines.append("\n--- SITE PERMISSION GRANTS ---")
-    if permissions:
-        for entry in permissions:
-            lines.append(
-                f"[{entry['permission_type']}] {entry['site']} -> "
-                f"setting={entry['setting']} "
-                f"(last_used={entry['last_used']}, source={entry['source_file']})"
-            )
-    else:
-        lines.append("No permission grants found.")
+    lines.append("\n--- SITE PERMISSIONS (what sites are allowed to do) ---")
+    lines.extend(format_permissions_section(permissions))
 
     lines.append("\n--- AUTOFILL ENTRIES ---")
     if autofill_entries:
