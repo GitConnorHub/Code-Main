@@ -1,10 +1,14 @@
 """
 Browser Anti-Forensic Residue Analyzer (Chrome only)
 
-Examines three Chrome browser artifact sources on a given profile folder:
+Examines five Chrome browser artifact sources on a given profile folder:
   1. Site permission grants (Secure Preferences / Preferences JSON)
   2. Autofill form data (Web Data SQLite database)
-  3. Service Worker Cache Storage (directory inventory)
+  3. Saved addresses/contact profiles (Web Data SQLite database)
+  4. Saved payment method metadata (Web Data SQLite database) - card
+     number and any locally cached security code are excluded, since
+     both are OS-encrypted and this tool never attempts to decrypt them
+  5. Service Worker Cache Storage (directory inventory)
 
 Produces a consolidated, human-readable residue report showing what
 browsing-related evidence remains recoverable.
@@ -157,6 +161,55 @@ def parse_permissions(profile_path):
     return results
 
 
+def _copy_web_data(profile_path, work_dir):
+    """
+    Copies Chrome's 'Web Data' SQLite database (plus WAL/SHM companions,
+    if present) into work_dir, both to avoid file-lock issues while
+    Chrome is running and to avoid modifying original evidence in place.
+    Returns the path to the copy, or None if the source file is missing
+    or couldn't be copied.
+    """
+    source_db = profile_path / "Web Data"
+
+    if not source_db.exists():
+        print("  [!] 'Web Data' file not found in profile.")
+        return None
+
+    working_copy = Path(work_dir) / "Web Data"
+    try:
+        shutil.copy2(source_db, working_copy)
+    except OSError as e:
+        print(f"  [!] Could not copy 'Web Data' (is Chrome running?): {e}")
+        return None
+
+    # Also copy WAL/SHM companion files if present - uncommitted recent
+    # changes can live here before being flushed into the main DB file.
+    for ext in ["-wal", "-shm"]:
+        companion = Path(str(source_db) + ext)
+        if companion.exists():
+            shutil.copy2(companion, str(working_copy) + ext)
+
+    return working_copy
+
+
+def _rows_as_dicts(cursor, table_name):
+    """
+    Selects every column from table_name and returns each row as a plain
+    dict, so callers can look up fields defensively with .get() instead
+    of crashing on a column that was renamed or doesn't exist in a given
+    Chrome version. Returns [] if the table is missing or the query
+    otherwise fails. table_name is always one of our own hardcoded
+    literals, never external input, so building the query with an
+    f-string here is safe.
+    """
+    try:
+        cursor.execute(f"SELECT * FROM {table_name}")
+        columns = [description[0] for description in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except sqlite3.Error:
+        return []
+
+
 def parse_autofill(profile_path, work_dir):
     """
     Parses stored autofill entries from Chrome's 'Web Data' SQLite database.
@@ -165,25 +218,9 @@ def parse_autofill(profile_path, work_dir):
     original evidence in place.
     """
     results = []
-    source_db = profile_path / "Web Data"
-
-    if not source_db.exists():
-        print("  [!] 'Web Data' file not found in profile.")
+    working_copy = _copy_web_data(profile_path, work_dir)
+    if working_copy is None:
         return results
-
-    working_copy = Path(work_dir) / "Web Data"
-    try:
-        shutil.copy2(source_db, working_copy)
-    except OSError as e:
-        print(f"  [!] Could not copy 'Web Data' (is Chrome running?): {e}")
-        return results
-
-    # Also copy WAL/SHM companion files if present - uncommitted recent
-    # changes can live here before being flushed into the main DB file.
-    for ext in ["-wal", "-shm"]:
-        companion = Path(str(source_db) + ext)
-        if companion.exists():
-            shutil.copy2(companion, str(working_copy) + ext)
 
     try:
         conn = sqlite3.connect(str(working_copy))
@@ -202,6 +239,102 @@ def parse_autofill(profile_path, work_dir):
         conn.close()
     except sqlite3.Error as e:
         print(f"  [!] Error reading autofill table: {e}")
+
+    return results
+
+
+def parse_autofill_profiles(profile_path, work_dir):
+    """
+    Parses saved address/contact profiles ("Addresses and more" in
+    Chrome's autofill settings) from the 'Web Data' SQLite database.
+    Like the plain autofill table, these aren't tied to a specific
+    website - Chrome offers them as suggestions on any site with a
+    matching form field.
+    """
+    results = []
+    working_copy = _copy_web_data(profile_path, work_dir)
+    if working_copy is None:
+        return results
+
+    try:
+        conn = sqlite3.connect(str(working_copy))
+        cursor = conn.cursor()
+
+        names_by_guid = {
+            row["guid"]: row["full_name"]
+            for row in _rows_as_dicts(cursor, "autofill_profile_names")
+            if row.get("full_name")
+        }
+        emails_by_guid = {
+            row["guid"]: row["email"]
+            for row in _rows_as_dicts(cursor, "autofill_profile_emails")
+            if row.get("email")
+        }
+        phones_by_guid = {
+            row["guid"]: row["number"]
+            for row in _rows_as_dicts(cursor, "autofill_profile_phones")
+            if row.get("number")
+        }
+
+        for row in _rows_as_dicts(cursor, "autofill_profiles"):
+            guid = row.get("guid")
+            results.append({
+                "guid": guid,
+                "name": names_by_guid.get(guid),
+                "email": emails_by_guid.get(guid),
+                "phone": phones_by_guid.get(guid),
+                "company_name": row.get("company_name"),
+                "street_address": row.get("street_address"),
+                "city": row.get("city"),
+                "state": row.get("state"),
+                "zipcode": row.get("zipcode"),
+                "country_code": row.get("country_code"),
+                "use_count": row.get("use_count"),
+                "use_date": unix_time_to_iso(row.get("use_date")),
+            })
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"  [!] Error reading autofill_profiles table: {e}")
+
+    return results
+
+
+def parse_credit_cards(profile_path, work_dir):
+    """
+    Parses saved payment method *metadata* from the 'Web Data' SQLite
+    database: name on card, expiration, nickname, and usage stats.
+
+    Deliberately does not read or attempt to decrypt the card number
+    (card_number_encrypted) or any locally cached security code
+    (local_stored_cvc, on Chrome versions that have it). Both are
+    encrypted with the OS user's own credentials (Windows DPAPI plus a
+    Chrome-managed AES key) - only the same Windows user account on the
+    same machine can decrypt them, so recovering them isn't something
+    this tool attempts.
+    """
+    results = []
+    working_copy = _copy_web_data(profile_path, work_dir)
+    if working_copy is None:
+        return results
+
+    try:
+        conn = sqlite3.connect(str(working_copy))
+        cursor = conn.cursor()
+        for row in _rows_as_dicts(cursor, "credit_cards"):
+            results.append({
+                "guid": row.get("guid"),
+                "name_on_card": row.get("name_on_card"),
+                "expiration_month": row.get("expiration_month"),
+                "expiration_year": row.get("expiration_year"),
+                "nickname": row.get("nickname"),
+                "use_count": row.get("use_count"),
+                "use_date": unix_time_to_iso(row.get("use_date")),
+                "billing_address_id": row.get("billing_address_id"),
+                "origin": row.get("origin"),
+            })
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"  [!] Error reading credit_cards table: {e}")
 
     return results
 
@@ -428,11 +561,21 @@ def format_permissions_section(permissions):
     return lines
 
 
-def generate_report(permissions, autofill_entries, cache_inventory, output_path):
+def generate_report(
+    permissions,
+    autofill_entries,
+    cache_inventory,
+    output_path,
+    addresses=None,
+    credit_cards=None,
+):
     """
     Writes a consolidated, human-readable residue report to a text file
     and prints it to the console.
     """
+    addresses = addresses or []
+    credit_cards = credit_cards or []
+
     lines = []
     lines.append("=" * 70)
     lines.append("BROWSER RESIDUE REPORT")
@@ -466,6 +609,76 @@ def generate_report(permissions, autofill_entries, cache_inventory, output_path)
             )
     else:
         lines.append("\nNo saved form data found.")
+
+    lines.append("\n--- SAVED ADDRESSES ---")
+    lines.append(
+        "Contact and address details Chrome offers to autofill into "
+        "forms (not tied to any specific website)."
+    )
+    if addresses:
+        for entry in addresses:
+            header_parts = [entry["name"]] if entry.get("name") else []
+            contact_bits = [
+                bit for bit in (entry.get("email"), entry.get("phone")) if bit
+            ]
+            if contact_bits:
+                header_parts.append("(" + ", ".join(contact_bits) + ")")
+            header = " ".join(header_parts) if header_parts else "(no name on file)"
+            lines.append(f"\n{header}")
+
+            street_address = (entry.get("street_address") or "").replace("\n", ", ")
+            address_bits = [
+                bit for bit in (
+                    street_address,
+                    entry.get("city"),
+                    entry.get("state"),
+                    entry.get("zipcode"),
+                    entry.get("country_code"),
+                ) if bit
+            ]
+            if address_bits:
+                lines.append(f"    {', '.join(address_bits)}")
+            if entry.get("company_name"):
+                lines.append(f"    Company: {entry['company_name']}")
+
+            usage_bits = []
+            if entry.get("use_count"):
+                usage_bits.append(f"used {entry['use_count']} time(s)")
+            if entry.get("use_date"):
+                usage_bits.append(f"last used {entry['use_date']}")
+            if usage_bits:
+                lines.append(f"    ({'; '.join(usage_bits)})")
+    else:
+        lines.append("\nNo saved addresses found.")
+
+    lines.append("\n--- SAVED PAYMENT METHODS ---")
+    lines.append(
+        "Payment cards Chrome has saved. Only card metadata is shown "
+        "here -- the full card number (and any locally cached security "
+        "code) is encrypted and is not read by this tool."
+    )
+    if credit_cards:
+        for entry in credit_cards:
+            name = entry.get("name_on_card") or "(no name on file)"
+            header = f"\nName on card: {name}"
+            month = entry.get("expiration_month")
+            year = entry.get("expiration_year")
+            if month and year:
+                header += f" — expires {int(month):02d}/{int(year)}"
+            lines.append(header)
+
+            if entry.get("nickname"):
+                lines.append(f"    Nickname: \"{entry['nickname']}\"")
+
+            usage_bits = []
+            if entry.get("use_count"):
+                usage_bits.append(f"used {entry['use_count']} time(s)")
+            if entry.get("use_date"):
+                usage_bits.append(f"last used {entry['use_date']}")
+            if usage_bits:
+                lines.append(f"    ({'; '.join(usage_bits)})")
+    else:
+        lines.append("\nNo saved payment methods found.")
 
     lines.append("\n--- CACHED WEB APP DATA ---")
     lines.append(
@@ -534,10 +747,23 @@ def main():
         print("[*] Parsing autofill data...")
         autofill_entries = parse_autofill(profile_path, work_dir)
 
+        print("[*] Parsing saved addresses...")
+        addresses = parse_autofill_profiles(profile_path, work_dir)
+
+        print("[*] Parsing saved payment methods...")
+        credit_cards = parse_credit_cards(profile_path, work_dir)
+
         print("[*] Inventorying Service Worker cache...")
         cache_inventory = inventory_service_worker_cache(profile_path)
 
-        generate_report(permissions, autofill_entries, cache_inventory, output_path)
+        generate_report(
+            permissions,
+            autofill_entries,
+            cache_inventory,
+            output_path,
+            addresses=addresses,
+            credit_cards=credit_cards,
+        )
 
 
 if __name__ == "__main__":

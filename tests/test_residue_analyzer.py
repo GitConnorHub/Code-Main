@@ -725,6 +725,175 @@ class TestParseAutofillAdditional:
         assert "Could not copy" in capsys.readouterr().out
 
 
+class TestParseAutofillProfiles:
+    def _make_profiles_db(self, path, profile_rows, name_rows=(), email_rows=(), phone_rows=()):
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE autofill_profiles (guid TEXT, company_name TEXT, "
+            "street_address TEXT, city TEXT, state TEXT, zipcode TEXT, "
+            "country_code TEXT, use_count INTEGER, use_date INTEGER)"
+        )
+        conn.execute("CREATE TABLE autofill_profile_names (guid TEXT, full_name TEXT)")
+        conn.execute("CREATE TABLE autofill_profile_emails (guid TEXT, email TEXT)")
+        conn.execute("CREATE TABLE autofill_profile_phones (guid TEXT, number TEXT)")
+        conn.executemany("INSERT INTO autofill_profiles VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", profile_rows)
+        conn.executemany("INSERT INTO autofill_profile_names VALUES (?, ?)", name_rows)
+        conn.executemany("INSERT INTO autofill_profile_emails VALUES (?, ?)", email_rows)
+        conn.executemany("INSERT INTO autofill_profile_phones VALUES (?, ?)", phone_rows)
+        conn.commit()
+        conn.close()
+
+    def test_missing_web_data_returns_empty_list(self, tmp_path):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        assert ra.parse_autofill_profiles(tmp_path, str(work_dir)) == []
+
+    def test_reads_address_joined_with_name_email_and_phone(self, tmp_path):
+        self._make_profiles_db(
+            tmp_path / "Web Data",
+            profile_rows=[
+                ("guid1", "Acme Corp", "123 Example St", "Springfield", "IL", "62704", "US", 3, 1735689600)
+            ],
+            name_rows=[("guid1", "Jane Doe")],
+            email_rows=[("guid1", "jane@example.com")],
+            phone_rows=[("guid1", "555-1234")],
+        )
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        results = ra.parse_autofill_profiles(tmp_path, str(work_dir))
+
+        assert len(results) == 1
+        entry = results[0]
+        assert entry["name"] == "Jane Doe"
+        assert entry["email"] == "jane@example.com"
+        assert entry["phone"] == "555-1234"
+        assert entry["city"] == "Springfield"
+        assert entry["use_date"] == "2025-01-01T00:00:00+00:00"
+
+    def test_address_without_matching_name_email_or_phone_row(self, tmp_path):
+        # A profile can exist with no linked name/email/phone rows at
+        # all (e.g. only an address was ever saved); this must not
+        # crash and should just leave those fields as None.
+        self._make_profiles_db(
+            tmp_path / "Web Data",
+            profile_rows=[
+                ("guid1", None, "1 Test Rd", "Nowhere", None, "00000", "US", 0, 0)
+            ],
+        )
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        results = ra.parse_autofill_profiles(tmp_path, str(work_dir))
+
+        assert len(results) == 1
+        assert results[0]["name"] is None
+        assert results[0]["email"] is None
+        assert results[0]["phone"] is None
+
+    def test_missing_related_tables_does_not_crash(self, tmp_path):
+        # Only the core autofill_profiles table exists -- the
+        # names/emails/phones tables are entirely absent, not just
+        # empty. _rows_as_dicts() must tolerate a missing table rather
+        # than raising sqlite3.OperationalError.
+        conn = sqlite3.connect(str(tmp_path / "Web Data"))
+        conn.execute(
+            "CREATE TABLE autofill_profiles (guid TEXT, company_name TEXT, "
+            "street_address TEXT, city TEXT, state TEXT, zipcode TEXT, "
+            "country_code TEXT, use_count INTEGER, use_date INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO autofill_profiles VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("guid1", None, "1 Test Rd", "Nowhere", None, "00000", "US", 0, 0),
+        )
+        conn.commit()
+        conn.close()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        results = ra.parse_autofill_profiles(tmp_path, str(work_dir))
+
+        assert len(results) == 1
+        assert results[0]["name"] is None
+
+
+class TestParseCreditCards:
+    def _make_credit_cards_db(self, path, rows):
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE credit_cards (guid TEXT, name_on_card TEXT, "
+            "expiration_month INTEGER, expiration_year INTEGER, nickname TEXT, "
+            "use_count INTEGER, use_date INTEGER, billing_address_id TEXT, origin TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO credit_cards VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
+        )
+        conn.commit()
+        conn.close()
+
+    def test_missing_web_data_returns_empty_list(self, tmp_path):
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        assert ra.parse_credit_cards(tmp_path, str(work_dir)) == []
+
+    def test_reads_card_metadata(self, tmp_path):
+        self._make_credit_cards_db(
+            tmp_path / "Web Data",
+            rows=[("cardguid1", "Jane Doe", 4, 2027, "Work Amex", 6, 1735689600, "guid1", "Chrome settings")],
+        )
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        results = ra.parse_credit_cards(tmp_path, str(work_dir))
+
+        assert len(results) == 1
+        entry = results[0]
+        assert entry["name_on_card"] == "Jane Doe"
+        assert entry["expiration_month"] == 4
+        assert entry["expiration_year"] == 2027
+        assert entry["nickname"] == "Work Amex"
+        assert entry["use_date"] == "2025-01-01T00:00:00+00:00"
+
+    def test_does_not_read_card_number_or_cvc_columns(self, tmp_path):
+        # Even if the real Chrome schema's encrypted columns
+        # (card_number_encrypted, and on newer versions a separate
+        # local_stored_cvc table) are present, parse_credit_cards must
+        # never surface them -- only the plaintext metadata fields it
+        # explicitly selects.
+        conn = sqlite3.connect(str(tmp_path / "Web Data"))
+        conn.execute(
+            "CREATE TABLE credit_cards (guid TEXT, name_on_card TEXT, "
+            "expiration_month INTEGER, expiration_year INTEGER, nickname TEXT, "
+            "use_count INTEGER, use_date INTEGER, billing_address_id TEXT, "
+            "origin TEXT, card_number_encrypted BLOB)"
+        )
+        conn.execute(
+            "INSERT INTO credit_cards VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("cardguid1", "Jane Doe", 4, 2027, None, 1, 0, "guid1", "Chrome settings", b"\x00secret-bytes"),
+        )
+        conn.commit()
+        conn.close()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        results = ra.parse_credit_cards(tmp_path, str(work_dir))
+
+        assert "card_number_encrypted" not in results[0]
+        assert b"secret-bytes" not in repr(results[0]).encode()
+
+    def test_missing_table_returns_empty_list(self, tmp_path):
+        # A profile with a Web Data file but no credit_cards table at
+        # all (e.g. the user never saved a payment method).
+        conn = sqlite3.connect(str(tmp_path / "Web Data"))
+        conn.execute("CREATE TABLE autofill (name TEXT, value TEXT)")
+        conn.commit()
+        conn.close()
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        assert ra.parse_credit_cards(tmp_path, str(work_dir)) == []
+
+
 class TestCleanSiteNameAdditional:
     def test_strips_http_prefix(self):
         assert ra.clean_site_name("http://example.com,*") == "example.com"
@@ -971,7 +1140,49 @@ class TestGenerateReport:
         text = output_path.read_text(encoding="utf-8")
         assert "No permission grants found." in text
         assert "No saved form data found." in text
+        assert "No saved addresses found." in text
+        assert "No saved payment methods found." in text
         assert "No cached web app data found." in text
+
+    def test_writes_address_and_payment_sections_when_populated(self, tmp_path):
+        output_path = tmp_path / "report.txt"
+        addresses = [
+            {
+                "name": "Jane Doe",
+                "email": "jane@example.com",
+                "phone": "555-1234",
+                "company_name": "Acme Corp",
+                "street_address": "123 Example St\nApt 4",
+                "city": "Springfield",
+                "state": "IL",
+                "zipcode": "62704",
+                "country_code": "US",
+                "use_count": 3,
+                "use_date": "2025-01-01T00:00:00+00:00",
+            }
+        ]
+        credit_cards = [
+            {
+                "name_on_card": "Jane Doe",
+                "expiration_month": 4,
+                "expiration_year": 2027,
+                "nickname": "Work Amex",
+                "use_count": 6,
+                "use_date": "2025-01-01T00:00:00+00:00",
+            }
+        ]
+
+        ra.generate_report(
+            [], [], [], str(output_path), addresses=addresses, credit_cards=credit_cards
+        )
+
+        text = output_path.read_text(encoding="utf-8")
+        assert "Jane Doe (jane@example.com, 555-1234)" in text
+        assert "123 Example St, Apt 4, Springfield, IL, 62704, US" in text
+        assert "Company: Acme Corp" in text
+        assert "Name on card: Jane Doe — expires 04/2027" in text
+        assert 'Nickname: "Work Amex"' in text
+        assert "used 6 time(s); last used 2025-01-01T00:00:00+00:00" in text
 
 
 class TestMainEndToEnd:

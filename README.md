@@ -5,12 +5,17 @@ folder and reports what browsing-related evidence is still recoverable from
 it. It's read-only: it never modifies, deletes, or hides anything in the
 profile it examines.
 
-It looks at three artifact sources:
+It looks at five artifact sources:
 
 1. **Site permission grants** — from `Secure Preferences` / `Preferences`
    (camera, microphone, location, notifications, etc.)
 2. **Autofill form data** — from the `Web Data` SQLite database
-3. **Service Worker Cache Storage** — a per-origin file/size inventory
+3. **Saved addresses/contact profiles** — from the `Web Data` SQLite database
+4. **Saved payment method metadata** — from the `Web Data` SQLite database
+   (name on card, expiration, nickname, usage — **not** the card number or
+   any locally cached security code, both of which are OS-encrypted and
+   never decrypted by this tool)
+5. **Service Worker Cache Storage** — a per-origin file/size inventory
 
 The output is a single, plain-English text report — no coding knowledge
 needed to read it.
@@ -89,14 +94,15 @@ pytest
 
 Test files live in `tests/test_residue_analyzer.py`. Most tests are plain
 `test_*` functions grouped by the function they cover (`chrome_time_to_iso`,
-`find_chrome_profile_path`, `parse_permissions`, `parse_autofill`,
-`inventory_service_worker_cache`, and the readability layer
+`unix_time_to_iso`, `find_chrome_profile_path`, `parse_permissions`,
+`parse_autofill`, `inventory_service_worker_cache`, and the readability layer
 `friendly_permission_type`/`friendly_site_name`/`summarize_permissions_by_site`),
 including regression tests for two `AttributeError` crashes previously found
-in `parse_permissions` on malformed/non-dict JSON, and a deduplication test
+in `parse_permissions` on malformed/non-dict JSON, a deduplication test
 for the same exception appearing in both `Secure Preferences` and
-`Preferences`. An end-to-end test runs the full pipeline against a
-synthetic profile.
+`Preferences`, and a regression test for autofill dates using the wrong
+epoch (Unix seconds vs. the WebKit epoch used elsewhere in Chrome's data).
+An end-to-end test runs the full pipeline against a synthetic profile.
 
 A few remaining classes cover behavior not exercised above:
 
@@ -105,6 +111,8 @@ A few remaining classes cover behavior not exercised above:
 | `TestFindChromeProfilePathLiveDetection` | `LOCALAPPDATA`-based live profile lookup |
 | `TestParsePermissionsAdditional` | A non-dict per-site "details" value; merging distinct entries across both preference files |
 | `TestParseAutofillAdditional` | WAL/SHM companion file copying; a locked/inaccessible `Web Data` file |
+| `TestParseAutofillProfiles` | Saved addresses joined with name/email/phone; missing related tables |
+| `TestParseCreditCards` | Card metadata parsing; confirms the encrypted card number/CVC columns are never surfaced |
 | `TestCleanSiteNameAdditional` | Site name display cleanup edge cases |
 | `TestFormatPermissionsSection` | Plain-English permission report text rendering |
 | `TestGenerateReport` | Full report generation, including the all-empty case |
