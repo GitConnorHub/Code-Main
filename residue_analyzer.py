@@ -458,6 +458,31 @@ def clean_site_name(site_pattern):
 friendly_site_name = clean_site_name
 
 
+# Substrings of a plain autofill field's name that suggest it's part of
+# an address, based on common HTML autocomplete tokens/naming
+# conventions (e.g. "address-line1", "postal-code", "address-level2").
+ADDRESS_LIKE_AUTOFILL_KEYWORDS = (
+    "address", "street", "city", "postal", "postcode", "zip",
+    "state", "province", "county", "country",
+)
+
+
+def is_address_like_autofill_field(field_name):
+    """
+    Heuristically flags a plain autofill field name as address-related.
+    This is a guess, not a Chrome-confirmed address: the plain autofill
+    table has no concept of which fields were submitted together on the
+    same form, so entries flagged this way may come from different
+    forms or different points in time and aren't guaranteed to describe
+    one single real address, unlike an entry from autofill_profiles
+    (Chrome's own explicitly-saved "Addresses and more").
+    """
+    if not field_name:
+        return False
+    lowered = field_name.lower()
+    return any(keyword in lowered for keyword in ADDRESS_LIKE_AUTOFILL_KEYWORDS)
+
+
 def friendly_permission_type(permission_type):
     """
     Looks up a human-readable label for a raw Chrome permission_type key,
@@ -575,6 +600,14 @@ def generate_report(
     """
     addresses = addresses or []
     credit_cards = credit_cards or []
+    address_like_autofill = [
+        entry for entry in autofill_entries
+        if is_address_like_autofill_field(entry["field_name"])
+    ]
+    plain_autofill_entries = [
+        entry for entry in autofill_entries
+        if not is_address_like_autofill_field(entry["field_name"])
+    ]
 
     lines = []
     lines.append("=" * 70)
@@ -599,8 +632,8 @@ def generate_report(
         "Text that Chrome remembered from forms you've filled in before "
         "(names, addresses, search terms typed into forms, etc.)."
     )
-    if autofill_entries:
-        for entry in autofill_entries:
+    if plain_autofill_entries:
+        for entry in plain_autofill_entries:
             times_word = "time" if entry["use_count"] == 1 else "times"
             last_used = entry["date_last_used"] or "not recorded"
             lines.append(
@@ -648,7 +681,23 @@ def generate_report(
                 usage_bits.append(f"last used {entry['use_date']}")
             if usage_bits:
                 lines.append(f"    ({'; '.join(usage_bits)})")
-    else:
+
+    if address_like_autofill:
+        lines.append(
+            "\nAddress-like form field values (recovered from form "
+            "history, not a single address Chrome explicitly saved -- "
+            "these may come from different forms or different times, "
+            "so they aren't guaranteed to belong together):"
+        )
+        for entry in address_like_autofill:
+            times_word = "time" if entry["use_count"] == 1 else "times"
+            last_used = entry["date_last_used"] or "not recorded"
+            lines.append(
+                f"    - \"{entry['field_name']}\" = \"{entry['value']}\" "
+                f"(used {entry['use_count']} {times_word}; last used {last_used})"
+            )
+
+    if not addresses and not address_like_autofill:
         lines.append("\nNo saved addresses found.")
 
     lines.append("\n--- SAVED PAYMENT METHODS ---")

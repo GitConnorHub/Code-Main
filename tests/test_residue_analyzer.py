@@ -905,6 +905,31 @@ class TestCleanSiteNameAdditional:
         assert ra.clean_site_name("example.com") == "example.com"
 
 
+class TestIsAddressLikeAutofillField:
+    def test_recognizes_standard_autocomplete_tokens(self):
+        # These are the exact field names Chrome wrote to the autofill
+        # table for a real seeded address form (address-line1,
+        # address-level2, postal-code), which previously showed up
+        # under "SAVED FORM DATA" instead of "SAVED ADDRESSES".
+        for field_name in ("address-line1", "address-level2", "postal-code"):
+            assert ra.is_address_like_autofill_field(field_name) is True
+
+    def test_recognizes_other_common_address_field_names(self):
+        for field_name in ("street-address", "city", "zipcode", "state", "country"):
+            assert ra.is_address_like_autofill_field(field_name) is True
+
+    def test_is_case_insensitive(self):
+        assert ra.is_address_like_autofill_field("Address-Line1") is True
+
+    def test_unrelated_field_names_are_not_flagged(self):
+        for field_name in ("email", "username", "search_query", "card_number"):
+            assert ra.is_address_like_autofill_field(field_name) is False
+
+    def test_none_or_empty_field_name_is_not_flagged(self):
+        assert ra.is_address_like_autofill_field(None) is False
+        assert ra.is_address_like_autofill_field("") is False
+
+
 class TestFormatPermissionsSection:
     def test_empty_permissions_returns_placeholder_message(self):
         assert ra.format_permissions_section([]) == ["No permission grants found."]
@@ -1183,6 +1208,37 @@ class TestGenerateReport:
         assert "Name on card: Jane Doe — expires 04/2027" in text
         assert 'Nickname: "Work Amex"' in text
         assert "used 6 time(s); last used 2025-01-01T00:00:00+00:00" in text
+
+    def test_address_like_autofill_fields_move_to_addresses_section(self, tmp_path):
+        # Regression test: a real seeded address form's individual field
+        # values (address-line1, address-level2, postal-code) previously
+        # only appeared under "SAVED FORM DATA (AUTOFILL)" even though
+        # they're clearly address data, because Chrome only creates an
+        # autofill_profiles entry if its own "Save address?" prompt was
+        # shown and accepted -- these fields get remembered regardless.
+        output_path = tmp_path / "report.txt"
+        autofill_entries = [
+            {"field_name": "address-line1", "value": "17 Test Drive", "use_count": 1, "date_last_used": None},
+            {"field_name": "address-level2", "value": "Test City", "use_count": 1, "date_last_used": None},
+            {"field_name": "postal-code", "value": "TU123", "use_count": 1, "date_last_used": None},
+            {"field_name": "email", "value": "user@example.com", "use_count": 2, "date_last_used": None},
+        ]
+
+        ra.generate_report([], autofill_entries, [], str(output_path))
+
+        text = output_path.read_text(encoding="utf-8")
+        form_data_section = text.split("--- SAVED ADDRESSES ---")[0]
+        addresses_section = text.split("--- SAVED ADDRESSES ---")[1].split("--- SAVED PAYMENT METHODS ---")[0]
+
+        assert 'Field "email" = "user@example.com"' in form_data_section
+        assert "address-line1" not in form_data_section
+
+        assert '"address-line1" = "17 Test Drive"' in addresses_section
+        assert '"address-level2" = "Test City"' in addresses_section
+        assert '"postal-code" = "TU123"' in addresses_section
+        assert "email" not in addresses_section
+        assert "not a single address Chrome explicitly saved" in addresses_section
+        assert "No saved addresses found." not in addresses_section
 
 
 class TestMainEndToEnd:

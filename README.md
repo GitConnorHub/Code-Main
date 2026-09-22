@@ -77,6 +77,23 @@ discord.com
       - Site engagement — Chrome's internal 'how often do you use this site' score.
 ```
 
+The saved addresses section separates two different kinds of evidence: an
+address Chrome explicitly saved (from `autofill_profiles`, only created
+when Chrome's own "Save address?" prompt was shown and accepted) versus
+individual address-looking field values recovered from plain form history
+(field names like `address-line1`, `postal-code`, `city`, etc.). The two
+aren't the same kind of evidence — plain form history has no concept of
+which fields were submitted together, so several such fields showing up
+together aren't guaranteed to be one real address, and are labeled as such:
+
+```
+Address-like form field values (recovered from form history, not a single
+address Chrome explicitly saved -- these may come from different forms or
+different times, so they aren't guaranteed to belong together):
+    - "address-line1" = "17 Test Drive" (used 1 time; last used ...)
+    - "postal-code" = "TU123" (used 1 time; last used ...)
+```
+
 ## Requirements
 
 - Python 3, standard library only (no third-party runtime dependencies)
@@ -114,6 +131,7 @@ A few remaining classes cover behavior not exercised above:
 | `TestParseAutofillProfiles` | Saved addresses joined with name/email/phone; missing related tables |
 | `TestParseCreditCards` | Card metadata parsing; confirms the encrypted card number/CVC columns are never surfaced |
 | `TestCleanSiteNameAdditional` | Site name display cleanup edge cases |
+| `TestIsAddressLikeAutofillField` | The heuristic that routes address-looking form fields into the addresses section |
 | `TestFormatPermissionsSection` | Plain-English permission report text rendering |
-| `TestGenerateReport` | Full report generation, including the all-empty case |
+| `TestGenerateReport` | Full report generation, including the all-empty case and address-like field routing |
 | `TestMainEndToEnd` | Full CLI pipeline, including a nonexistent profile path |
