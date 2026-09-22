@@ -27,6 +27,38 @@ python residue_analyzer.py --profile-path "C:\path\to\Default" --output report.t
   (Windows only, via the `LOCALAPPDATA` environment variable).
 - `--output` — where to save the report (default: `residue_report.txt`).
 
+## Sharing a captured dataset (e.g. for grading)
+
+To let someone else (a marker, a colleague) run this tool against the
+exact same data you did and get matching results, hand over the raw
+profile files, not just your generated report — the report on its own
+can't be re-analyzed.
+
+1. **Close Chrome first.** `Web Data` in particular is locked while
+   Chrome is running and may not copy cleanly otherwise.
+2. **Copy these three items out of the seeded profile folder** (typically
+   `%LOCALAPPDATA%\Google\Chrome\User Data\Default`) into a new, empty
+   folder — keep the exact names:
+   - `Preferences` and/or `Secure Preferences`
+   - `Web Data`
+   - the `Service Worker\CacheStorage` folder (with its contents)
+
+   Don't copy the whole profile folder — it also contains history,
+   cookies, and cached site content that isn't needed here and may be
+   sensitive even in a seeded profile (e.g. real login sessions if you
+   ever signed into anything other than test accounts while seeding it).
+3. **Zip that folder** (e.g. `seed_profile.zip`) and send it alongside
+   `residue_analyzer.py` (or a link to this repo).
+4. **Tell them the exact command to run:**
+   ```bash
+   python residue_analyzer.py --profile-path "<path to extracted seed_profile>" --output marker_report.txt
+   ```
+5. Optionally, generate `residue_report.txt` yourself from that same
+   seed data first and include it as a reference, so they can diff their
+   output against yours. Everything should match except the `Generated:`
+   line at the top, which is always the current date/time and isn't
+   derived from the data.
+
 ## Report format
 
 The site permissions section groups results by site and separates real
