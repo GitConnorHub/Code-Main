@@ -62,6 +62,23 @@ def chrome_time_to_iso(chrome_timestamp):
         return None
 
 
+def unix_time_to_iso(unix_timestamp):
+    """
+    Converts a Unix epoch timestamp (seconds since 1970-01-01 UTC) into a
+    readable ISO 8601 UTC string. Unlike most Chrome data (Preferences,
+    site/media engagement), the autofill table's date_created/
+    date_last_used columns are stored in this format, not the WebKit
+    epoch used by chrome_time_to_iso(). Returns None if the value is
+    missing, zero, or invalid.
+    """
+    if not unix_timestamp:
+        return None
+    try:
+        return datetime.fromtimestamp(int(unix_timestamp), tz=timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def _as_dict(value):
     """Returns value if it's a dict, otherwise an empty dict."""
     return value if isinstance(value, dict) else {}
@@ -179,8 +196,8 @@ def parse_autofill(profile_path, work_dir):
                 "field_name": name,
                 "value": value,
                 "use_count": count,
-                "date_created": chrome_time_to_iso(date_created),
-                "date_last_used": chrome_time_to_iso(date_last_used),
+                "date_created": unix_time_to_iso(date_created),
+                "date_last_used": unix_time_to_iso(date_last_used),
             })
         conn.close()
     except sqlite3.Error as e:

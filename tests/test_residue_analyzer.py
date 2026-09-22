@@ -49,6 +49,7 @@ from residue_analyzer import (
     parse_autofill,
     parse_permissions,
     summarize_permissions_by_site,
+    unix_time_to_iso,
 )
 
 import residue_analyzer as ra
@@ -102,6 +103,36 @@ def test_chrome_time_to_iso_negative_value():
     # function should not raise, whatever it decides to return.
     result = chrome_time_to_iso(-1)
     assert result is None or isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# unix_time_to_iso
+# ---------------------------------------------------------------------------
+
+def test_unix_time_to_iso_known_value():
+    # 1735689600 is 2025-01-01T00:00:00 UTC. Chrome's autofill table
+    # stores date_created/date_last_used as Unix seconds, not the WebKit
+    # epoch used elsewhere in Chrome's data -- feeding a Unix timestamp
+    # like this through chrome_time_to_iso() by mistake divides it by
+    # 1,000,000 as if it were WebKit microseconds, landing a few thousand
+    # seconds after 1601-01-01 instead of the real 2025 date.
+    assert unix_time_to_iso(1735689600) == "2025-01-01T00:00:00+00:00"
+
+
+def test_unix_time_to_iso_zero_returns_none():
+    assert unix_time_to_iso(0) is None
+
+
+def test_unix_time_to_iso_none_input():
+    assert unix_time_to_iso(None) is None
+
+
+def test_unix_time_to_iso_invalid_input():
+    assert unix_time_to_iso("not_a_number") is None
+
+
+def test_unix_time_to_iso_extreme_overflow_value():
+    assert unix_time_to_iso(10 ** 30) is None
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +277,13 @@ def test_parse_permissions_handles_non_dict_exception_values(tmp_path):
 
 def _make_web_data_db(path, rows=None):
     if rows is None:
-        rows = [("email", "j.smith@example.com", 3, 13432214034262918, 13432214034262918)]
+        # 1735689600 is 2025-01-01T00:00:00 UTC as a Unix timestamp (seconds
+        # since 1970), which is the format Chrome's autofill table actually
+        # uses for date_created/date_last_used -- unlike most other Chrome
+        # data (Preferences, site/media engagement), which uses the WebKit
+        # epoch (microseconds since 1601). See
+        # test_parse_autofill_last_used_uses_unix_epoch_not_webkit_epoch.
+        rows = [("email", "j.smith@example.com", 3, 1735689600, 1735689600)]
     conn = sqlite3.connect(str(path))
     conn.execute(
         "CREATE TABLE autofill (name TEXT, value TEXT, count INTEGER, "
@@ -272,6 +309,27 @@ def test_parse_autofill_reads_known_entry(tmp_path):
     assert entry["value"] == "j.smith@example.com"
     assert entry["use_count"] == 3
     assert entry["date_last_used"] is not None
+
+
+def test_parse_autofill_last_used_uses_unix_epoch_not_webkit_epoch(tmp_path):
+    # Regression test for a real bug: date_created/date_last_used in the
+    # autofill table are Unix seconds, not the WebKit epoch used
+    # elsewhere in Chrome's data. Using chrome_time_to_iso() (WebKit) on
+    # these columns produced a date a few thousand seconds after
+    # 1601-01-01 instead of the real date -- which read as "1601" in the
+    # generated report regardless of the real, recent last-used date.
+    profile_dir = tmp_path / "profile"
+    work_dir = tmp_path / "work"
+    profile_dir.mkdir()
+    work_dir.mkdir()
+    _make_web_data_db(profile_dir / "Web Data", rows=[
+        ("email", "j.smith@example.com", 1, 1735689600, 1735689600),
+    ])
+
+    results = parse_autofill(profile_dir, str(work_dir))
+
+    assert results[0]["date_last_used"] == "2025-01-01T00:00:00+00:00"
+    assert not results[0]["date_last_used"].startswith("1601")
 
 
 def test_parse_autofill_multiple_distinct_entries_all_kept(tmp_path):
